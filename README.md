@@ -1,154 +1,445 @@
 # AITerminal
 
-AITerminal is a terminal chatbot: a Python CLI sends questions over HTTPS to public Netlify Functions, which call Groq using a server-side API key.
+### Your AI assistant, directly in your terminal.
+
+AITerminal is a cloud-powered AI chatbot that brings conversational AI directly to your command line. Built with Python, Netlify Functions, Groq and Upstash Redis, it provides an interactive terminal experience without requiring users to configure their own AI API keys.
+
+Ask questions, explore ideas, generate code and have contextual conversations — all from your terminal.
+
+---
+
+## Features
+
+- **Interactive CLI:** Simple and clean terminal interface powered by Python and Rich.
+- **AI-powered responses:** Uses Groq-hosted language models.
+- **Conversational context:** Maintains the last 20 conversation messages during an active session.
+- **Cloud-powered architecture:** AI processing happens through a Netlify-hosted backend.
+- **No API key required for users:** The Groq API key stays securely on the server.
+- **Shared rate limiting:** Upstash Redis protects the public backend from excessive requests.
+- **Cross-platform:** Designed for Windows, Linux and macOS.
+- **Markdown rendering:** Displays formatted responses and code in the terminal.
+- **Lightweight installation:** Users only need Python and internet access.
+
+## Architecture
+
+AITerminal uses a client-server architecture.
 
 ```text
-Python CLI --HTTPS--> Netlify Functions --GROQ_API_KEY--> Groq
-                            |
-                            +--> Upstash Redis (shared rate-limit counters only)
+                USER
+                  |
+                  v
+          Python CLI Application
+                  |
+                  | HTTPS Request
+                  v
+           Netlify Functions
+                  |
+           +------+------+
+           |             |
+           v             v
+      Upstash Redis    Groq API
+      Rate Limiting   AI Processing
+           |             |
+           |             v
+           |        AI Response
+           |             |
+           +------+------+
+                  |
+                  v
+           Netlify Backend
+                  |
+                  v
+           Python CLI
+                  |
+                  v
+          Response to User
 ```
 
-There is no login, password, token, web frontend, or permanent chat storage. Conversation context stays in the CLI process and is sent with each question. The backend does not persist messages.
+### Technology Stack
 
-## Status and requirements
+| Component | Technology | Responsibility |
+|---|---|---|
+| CLI | Python | User interaction |
+| Terminal UI | Rich | Terminal formatting |
+| CLI framework | Typer | Command-line interface |
+| Backend | Netlify Functions | API processing |
+| AI provider | Groq API | AI response generation |
+| Rate limiting | Upstash Redis | Shared request counters |
+| Distribution | PyPI | Python package distribution |
+| Version control | Git and GitHub | Source code management |
 
-The source is configured to use `https://aiterminal-cloud.netlify.app` by default. The live health and chat endpoints both responded successfully during this release preparation; recheck them before publishing. The package has **not** been published to PyPI.
+## How It Works
 
-End users need Python 3.10+ and internet access, but no Groq API key, account, Node.js, Git, or SSH. The service owner needs Netlify, Groq, and Upstash Redis accounts. The backend is public and has no user identity; shared per-IP rate limits and provider usage limits are therefore important.
+1. The user enters a question in the terminal.
+2. The Python CLI sends the question and recent conversation history to the Netlify backend.
+3. The backend validates the request.
+4. Upstash Redis checks the request rate limit.
+5. If permitted, the backend forwards the question to Groq.
+6. Groq generates an AI response.
+7. Netlify returns the response to the Python CLI.
+8. The CLI displays the answer and updates its conversation history.
 
-## Deploy the backend to Netlify
+## Conversational Context
 
-1. Create a GitHub repository and upload this project, including `netlify/functions`, `netlify.toml`, `package.json`, and `package-lock.json`. Do not add a `.env` file or secrets.
-2. In Netlify, select **Add new site** → **Import an existing project**, connect the repository, and authorize access.
-3. Use the settings in `netlify.toml`: no build command, `public` as the publish directory, `netlify/functions` as the functions directory, and Node.js 20.
-4. Create an Upstash Redis database and enable its HTTPS REST API. From the database console, copy the REST URL and REST token. Use a database in a region close to the Netlify site when practical.
-5. In Netlify **Site configuration** → **Environment variables**, configure these server-side values for the deployed context:
+AITerminal supports short-term conversational context.
 
-   | Variable | Value |
-   | --- | --- |
-   | `GROQ_API_KEY` | Groq API key |
-   | `GROQ_MODEL` | A currently available Groq chat-completion model |
-   | `UPSTASH_REDIS_REST_URL` | Upstash database REST URL |
-   | `UPSTASH_REDIS_REST_TOKEN` | Upstash database REST token |
+During an active session, the CLI maintains a conversation history containing user messages and AI responses.
 
-   These settings belong only in Netlify. Never commit them, put them in the Python package, or paste them in logs. The CLI only receives the answer. Re-deploy after changing variables.
-6. Enable HTTPS for the Netlify site in its dashboard. Copy the actual site URL shown there; do not use a guessed URL.
-7. After configuring the URL, test the deployment as described below.
+- Maximum retained context: 20 messages.
+- History is maintained in Python process memory.
+- The `clear` command clears the current conversation.
+- The `exit` command ends the session and discards its history.
 
-### Shared rate limiting
+**Note:** Persistent memory across terminal sessions and permanent conversation storage are not currently implemented.
 
-Netlify Functions can run on separate and short-lived instances, so a process-local counter is not a reliable global limit. The chat function instead uses Upstash Redis and a single atomic Lua increment with a 60-second expiration. It allows up to 30 requests per platform-provided client IP per fixed one-minute window. IPs are SHA-256 hashed for Redis keys; request messages are never stored in Redis. If the Upstash configuration is missing, invalid, or unavailable, the function fails closed with HTTP 503 rather than sending a request to Groq.
+## Rate Limiting
 
-Upstash Redis is an additional server-side service required for the implemented shared rate limit. Configure its REST URL and token as Netlify environment variables. This is IP-based control, not account authentication: clients may share an IP or change IPs. Apply provider spending limits/alerts and consider an additional edge firewall or API gateway if the public endpoint needs stronger abuse controls. Redis request counters expire after one minute; conversation content is not persisted.
+AITerminal uses Upstash Redis to enforce shared backend rate limiting.
 
-### Test a deployed site
+Current implementation:
 
-The configured site URL is `https://aiterminal-cloud.netlify.app`. Confirm it matches the URL shown in the Netlify dashboard.
+| Setting | Value |
+|---|---|
+| Request limit | 30 requests |
+| Time window | 60 seconds |
+| Limiting method | Client IP |
+| Redis key | SHA-256 hashed IP |
+| Counter expiration | 60 seconds |
+| Storage | Temporary request counters |
 
-PowerShell:
+The backend uses an atomic Redis operation to maintain consistent counters across serverless function instances.
 
-```powershell
-$site = "https://aiterminal-cloud.netlify.app"
-Invoke-RestMethod "$site/.netlify/functions/health"
+If Redis is unavailable or incorrectly configured, the backend fails closed with HTTP 503.
+
+This protects the service from excessive requests but does not provide individual user authentication or separate quotas for each user.
+
+Groq's own account and model rate limits also apply.
+
+## Installation
+
+### Requirements
+
+- Python 3.10 or newer
+- Internet connection
+- Windows, Linux or macOS
+
+Users do not need:
+- A Groq API key
+- A Netlify account
+- Node.js
+- Redis installation
+- Git
+
+### Install from PyPI
+
+The package name is `termchat-ai`, and its terminal command is `aiterminal`.
+
+After the package is published to official PyPI:
+
+```bash
+python -m pip install termchat-ai
 ```
 
-The health endpoint is a public liveness check and returns `{"status":"ok"}`. To test chat without an API key, send a JSON request to the chat endpoint:
+Start the application:
 
-```powershell
-$body = @{ message = "What is Python?"; history = @() } | ConvertTo-Json
-Invoke-RestMethod "$site/.netlify/functions/chat" -Method Post -ContentType "application/json" -Body $body
+```bash
+aiterminal
 ```
 
-A successful response contains an `answer` string. Requests missing or unable to reach shared rate limiting return HTTP 503. Requests over the per-IP limit return HTTP 429. Groq keys and Upstash tokens are never returned by these endpoints.
-
-## Install and use the CLI
-
-The package name is `termchat-ai`; its executable command remains `aiterminal`. The package is not published yet.
-
-Install from PyPI after publication:
+### Windows
 
 ```powershell
 py -m pip install termchat-ai
 aiterminal
 ```
 
-```sh
+### Linux
+
+```bash
+python3 -m pip install termchat-ai
+aiterminal
+```
+
+On Linux distributions that manage system Python packages, use a virtual environment:
+
+```bash
+python3 -m venv ~/aiterminal-env
+source ~/aiterminal-env/bin/activate
 python -m pip install termchat-ai
 aiterminal
 ```
 
-For development from a local checkout, Windows PowerShell:
+### macOS
 
-```powershell
-py -m pip install .\cli
+```bash
+python3 -m pip install termchat-ai
 aiterminal
 ```
 
-Linux and macOS:
+## Usage
 
-```sh
-python3 -m pip install ./cli
-aiterminal
-```
-
-No login, password, token, or API key is requested. The client defaults to the HTTPS URL `https://aiterminal-cloud.netlify.app`; `AIT_TERMINAL_API_URL` may override it. HTTP is accepted only for localhost development.
-
-Example:
+After launching AITerminal:
 
 ```text
 Connecting to AITerminal Cloud...
 AITerminal ready!
-You> What is Python?
+
+You> What is artificial intelligence?
+
 AI>
-Python is a high-level programming language used for many kinds of software.
+Artificial intelligence is a field of computer science
+that focuses on creating systems capable of performing
+tasks that normally require human intelligence.
+
+You> Explain machine learning.
+
+AI>
+Machine learning is a subset of artificial intelligence...
+
 You> clear
+
 You> exit
+
 Goodbye!
 ```
 
-Use `clear` or `/clear` to clear the screen and forget the current session's conversation context. Use `exit` or `quit` to end the session. Rich formats readable Markdown and code in the terminal. The last 20 context messages are held only in process memory and discarded when the CLI exits.
+### Available Commands
 
-## Development and tests
+| Command | Description |
+|---|---|
+| `clear` | Clear the terminal and conversation history |
+| `/clear` | Alternative clear command |
+| `exit` | Exit AITerminal |
+| `quit` | Alternative exit command |
 
-Backend tests stub both Redis and Groq; no real service credentials or requests are needed:
+## Backend Deployment
 
-```sh
+AITerminal's backend runs on Netlify Functions.
+
+Configured production endpoint:
+
+`https://aiterminal-cloud.netlify.app`
+
+### Environment Variables
+
+Configure the following variables in Netlify:
+
+| Variable | Purpose |
+|---|---|
+| `GROQ_API_KEY` | Secret Groq API key |
+| `GROQ_MODEL` | Selected Groq model |
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint |
+| `UPSTASH_REDIS_REST_TOKEN` | Secret Upstash Redis token |
+
+Never include these credentials in the Python package, GitHub repository or public documentation.
+
+### Backend Deployment Steps
+
+1. Push the project to GitHub.
+2. Connect the repository to Netlify.
+3. Configure the build and function settings from `netlify.toml`.
+4. Configure the required environment variables.
+5. Deploy the application.
+6. Test the health and chat endpoints.
+
+### Health Check
+
+PowerShell:
+
+```powershell
+$site = "https://aiterminal-cloud.netlify.app"
+
+Invoke-RestMethod "$site/.netlify/functions/health"
+```
+
+Expected response:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+## Project Structure
+
+```text
+AITerminal/
+│
+├── cli/
+│   ├── src/
+│   │   └── aiterminal/
+│   │       ├── __init__.py
+│   │       ├── main.py
+│   │       ├── terminal.py
+│   │       └── client.py
+│   │
+│   ├── tests/
+│   └── pyproject.toml
+│
+├── netlify/
+│   └── functions/
+│       ├── chat.mjs
+│       └── health.mjs
+│
+├── docs/
+│
+├── public/
+│
+├── netlify.toml
+├── package.json
+├── package-lock.json
+├── .gitignore
+└── README.md
+```
+
+## Development Setup
+
+### Clone the repository
+
+```bash
+git clone https://github.com/Joelkoshyjohn/terminal-ai.git
+cd terminal-ai
+```
+
+### Set up the Python CLI
+
+Windows:
+
+```powershell
+cd cli
+
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+
+python -m pip install -e .
+```
+
+Linux/macOS:
+
+```bash
+cd cli
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+python -m pip install -e .
+```
+
+### Set up the backend
+
+From the project root:
+
+```bash
+npm install
+```
+
+Configure the required local environment variables without committing secrets.
+
+## Testing
+
+### Backend Tests
+
+```bash
 npm test
 ```
 
-CLI tests:
+Backend tests use stubs for Redis and Groq so that tests do not require real API credentials.
 
-```sh
-python -m pip install -e "./cli"
+### Python CLI Tests
+
+```bash
 python -m pip install pytest
 python -m pytest -c cli/pyproject.toml cli/tests
 ```
 
-Build the Python wheel and source distribution from the CLI package directory:
+### Build Python Distribution
 
-```sh
-cd cli
+From the CLI directory:
+
+```bash
+python -m pip install hatchling
 python -m hatchling build
 ```
 
-The Netlify Functions use Node.js built-ins and the Python package dependencies are declared in `cli/pyproject.toml`.
+## Security and Privacy
 
-## Security and data handling
+AITerminal is designed to keep provider credentials on the server.
 
-- The unauthenticated chat endpoint is public. Do not send sensitive information that should not be sent to Groq.
-- `GROQ_API_KEY` remains a Netlify server-side environment variable. The client contains only the public backend URL.
-- Request bodies are limited to 64 KiB; the current question and each history message are limited to 4,000 characters; at most 20 prior messages are accepted. Responses disable caching.
-- Groq calls have a 30-second timeout; the CLI network timeout is 35 seconds. Safe errors are returned without upstream credentials or detailed upstream bodies.
-- Conversation history is only in CLI process memory and is cleared on exit. Netlify Functions do not write messages to storage or logs. Redis stores only short-lived, hashed-IP rate counters.
-- Shared Redis rate limiting fails closed, but it does not prevent abuse via rotating IP addresses. Set usage alerts and provider spending limits.
+- Groq API credentials are stored in Netlify environment variables.
+- Upstash credentials are stored in Netlify environment variables.
+- The Python CLI communicates with the backend over HTTPS.
+- Redis stores temporary hashed-IP rate-limit counters.
+- Conversation messages are not permanently stored by the backend.
+- Conversation history is maintained temporarily in the CLI process.
 
-## PyPI release checklist
+**Important:** The chat endpoint is publicly accessible and does not currently implement user authentication. Avoid submitting sensitive personal information.
 
-The CLI is configured with package name `termchat-ai` and command `aiterminal`, but it has not been published.
+## Development Workflow
 
-1. Verify the default URL matches the deployed site and test health and chat over HTTPS.
-2. Replace project author and repository metadata in `cli/pyproject.toml` with real project information.
-3. Check `https://pypi.org/pypi/termchat-ai/json` immediately before publishing; package-name availability can change.
-4. Run both test suites, rebuild and inspect the wheel and source distribution, and publish using the maintainer's PyPI credentials. Never commit a PyPI token.
+AITerminal uses Git for source-code management.
 
-Do not consider deployment or publication complete until it has been independently verified.
+Recommended workflow:
+
+1. Keep `main` as the stable branch.
+2. Create feature branches for new development.
+3. Implement and test changes independently.
+4. Push feature branches to GitHub.
+5. Create Pull Requests.
+6. Review and test changes before merging into `main`.
+
+Example:
+
+```bash
+git switch -c feature/ai-memory
+
+git add .
+git commit -m "Add AI memory feature"
+
+git push -u origin feature/ai-memory
+```
+
+## Roadmap
+
+Planned improvements for future versions:
+
+- [ ] Persistent conversational memory
+- [ ] Conversation history management
+- [ ] Multiple AI provider support
+- [ ] AI model selection
+- [ ] Streaming responses
+- [ ] Document and PDF interaction
+- [ ] Voice interaction
+- [ ] User accounts and authentication
+- [ ] Usage and token monitoring dashboard
+- [ ] Browser-based interface
+
+These are planned features and are not represented as currently implemented functionality.
+
+## Contributing
+
+Contributions, suggestions and bug reports are welcome.
+
+To contribute:
+
+1. Fork the repository.
+2. Create a feature branch.
+3. Implement your changes.
+4. Add or update tests.
+5. Submit a Pull Request.
+
+Please do not include API keys, tokens or other credentials in contributions.
+
+## License
+
+A license has not yet been specified. Add an appropriate open-source license before presenting the repository as an open-source project.
+
+---
+
+**AITerminal**
+
+*Bringing conversational AI to your command line.*
+
+GitHub: https://github.com/Joelkoshyjohn/terminal-ai
+
+Cloud Backend: https://aiterminal-cloud.netlify.app
+![complete working](worikng.jpeg)
