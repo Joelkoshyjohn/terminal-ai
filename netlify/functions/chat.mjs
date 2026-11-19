@@ -14,6 +14,20 @@ end
 return {count, redis.call("PTTL", KEYS[1])}
 `;
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const COMMAND_PROPOSAL_PROMPT = `You are AITerminal, a conversational assistant with a limited local-action proposal feature.
+Return exactly one JSON object. For ordinary conversation, use:
+{"type":"answer","message":"your response"}
+Only when the user explicitly asks you to perform a local action, use:
+{"type":"command","message":"brief explanation","action":"one action below","arguments":{}}
+Allowed actions and arguments:
+- python_version: {}
+- install_python: {} (Windows only; installs Python 3.12 using winget)
+- create_directory: {"path":"directory path"}
+- list_directory: {"path":"directory path"}
+- pip_install: {"package":"single package name"}
+- create_venv: {"path":"new environment path"}
+- run_python_script: {"path":"existing .py file"}
+Do not return shell commands, command strings, scripts, or extra argument keys. Never propose deletion, disk formatting, security changes, downloads, or arbitrary shell commands. If a request is ambiguous, unsupported, or asks for a dangerous action, use type "answer" to ask a question or explain the limitation. Never ask for or reveal API keys, passwords, tokens, or other credentials.`;
 
 function response(statusCode, payload, headers = {}) {
   return {
@@ -128,6 +142,36 @@ function validateConversation(body) {
   return null;
 }
 
+function parseAssistantResponse(content) {
+  try {
+    const parsed = JSON.parse(content);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      typeof parsed.message === "string" &&
+      parsed.message.trim()
+    ) {
+      if (parsed.type === "answer") return { answer: parsed.message };
+      if (
+        parsed.type === "command" &&
+        typeof parsed.action === "string" &&
+        parsed.arguments &&
+        typeof parsed.arguments === "object" &&
+        !Array.isArray(parsed.arguments)
+      ) {
+        return {
+          answer: parsed.message,
+          proposal: { action: parsed.action, arguments: parsed.arguments },
+        };
+      }
+    }
+  } catch {
+    // Older or incompatible models may still return ordinary plain-text answers.
+  }
+  return { answer: content };
+}
+
 export async function handler(event) {
   if (event.httpMethod !== "POST") return response(405, { error: "Method not allowed." });
   const parsed = parseBody(event);
@@ -155,20 +199,33 @@ export async function handler(event) {
   const model = process.env.GROQ_MODEL;
   if (!apiKey || !model) return response(503, { error: "AI service is not configured." });
 
+  const requestBody = {
+    model,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: COMMAND_PROPOSAL_PROMPT },
+      ...(parsed.body.history ?? []).map(({ role, content }) => ({ role, content })),
+      { role: "user", content: parsed.body.message },
+    ],
+  };
   let groqResponse;
   try {
     groqResponse = await fetch(GROQ_URL, {
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages: [
-          ...(parsed.body.history ?? []).map(({ role, content }) => ({ role, content })),
-          { role: "user", content: parsed.body.message },
-        ],
-      }),
+      body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(30_000),
     });
+    if (groqResponse.status === 400) {
+      const compatibleRequestBody = { ...requestBody };
+      delete compatibleRequestBody.response_format;
+      groqResponse = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify(compatibleRequestBody),
+        signal: AbortSignal.timeout(30_000),
+      });
+    }
   } catch (error) {
     if (error?.name === "TimeoutError" || error?.name === "AbortError") {
       return response(504, { error: "The AI service timed out. Please try again." });
@@ -195,7 +252,7 @@ export async function handler(event) {
   if (typeof answer !== "string" || answer.trim().length === 0) {
     return response(502, { error: "The AI service returned an invalid response." });
   }
-  return response(200, { answer });
+  return response(200, parseAssistantResponse(answer));
 }
 
 export const _test = { validateConversation, checkRateLimit };

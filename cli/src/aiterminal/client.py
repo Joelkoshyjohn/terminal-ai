@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
@@ -18,6 +19,12 @@ class ServiceError(AITerminalError):
     """The backend returned a safe, user-facing error."""
 
 
+@dataclass(frozen=True)
+class ChatResponse:
+    answer: str
+    proposal: object | None = None
+
+
 class AITerminalClient:
     def __init__(
         self,
@@ -29,6 +36,8 @@ class AITerminalClient:
         configured_url = base_url or os.getenv("AIT_TERMINAL_API_URL") or DEFAULT_API_URL
         self.base_url = configured_url.rstrip("/")
         parsed = urlparse(self.base_url)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("AIT_TERMINAL_API_URL must not contain credentials.")
         if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise ValueError("AIT_TERMINAL_API_URL must use HTTPS (HTTP is allowed only for localhost).")
         if not parsed.netloc:
@@ -36,6 +45,9 @@ class AITerminalClient:
         self._http = httpx.Client(base_url=self.base_url, timeout=timeout, transport=transport)
 
     def ask(self, message: str, history: list[dict[str, str]]) -> str:
+        return self.ask_with_proposal(message, history).answer
+
+    def ask_with_proposal(self, message: str, history: list[dict[str, str]]) -> ChatResponse:
         try:
             result = self._http.post(
                 "/.netlify/functions/chat",
@@ -60,7 +72,8 @@ class AITerminalClient:
         answer = payload.get("answer") if isinstance(payload, dict) else None
         if not isinstance(answer, str) or not answer.strip():
             raise ServiceError("AITerminal returned an invalid response.")
-        return answer
+        proposal = payload.get("proposal") if isinstance(payload, dict) else None
+        return ChatResponse(answer=answer, proposal=proposal)
 
     @staticmethod
     def _error_message(result: httpx.Response, fallback: str) -> str:

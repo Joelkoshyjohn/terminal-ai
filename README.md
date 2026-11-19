@@ -19,6 +19,7 @@ Ask questions, explore ideas, generate code and have contextual conversations �
 - **Cross-platform:** Designed for Windows, Linux and macOS.
 - **Markdown rendering:** Displays formatted responses and code in the terminal.
 - **Lightweight installation:** Users only need Python and internet access.
+- **Local actions with approval:** Reviews allowlisted command proposals and requires fresh confirmation before each local action.
 
 ## Architecture
 
@@ -48,11 +49,15 @@ AITerminal uses a client-server architecture.
                   v
            Netlify Backend
                   |
-                  v
-           Python CLI
+            Answer or structured
+            local-action proposal
                   |
                   v
-          Response to User
+           Python CLI validates
+           and asks permission
+                   |
+                   v
+           Local computer
 ```
 
 ### Technology Stack
@@ -76,8 +81,9 @@ AITerminal uses a client-server architecture.
 4. Upstash Redis checks the request rate limit.
 5. If permitted, the backend forwards the question to Groq.
 6. Groq generates an AI response.
-7. Netlify returns the response to the Python CLI.
-8. The CLI displays the answer and updates its conversation history.
+7. Netlify returns an answer or a structured local-action proposal; it never executes local commands.
+8. The CLI displays and validates a proposal, asks for approval, and executes an approved action locally.
+9. The CLI displays the local result. It asks separately before sending captured output to the AI for an explanation.
 
 ## Conversational Context
 
@@ -212,6 +218,21 @@ Goodbye!
 | `exit` | Exit AITerminal |
 | `quit` | Alternative exit command |
 
+### Local actions
+
+When asked to perform a supported task, AITerminal displays the proposed operation and asks `Run this local action? [y/N]`. Each action requires a new approval; declining it cancels that action. Supported operations are:
+
+- Check the current Python interpreter version.
+- Install Python 3.12 on Windows through the fixed `winget` package ID `Python.Python.3.12`.
+- Create a new directory or list entries in a directory.
+- Install one named Python package from the configured package index, using binary distributions only.
+- Create a new Python virtual environment at a path that does not already exist.
+- Run an existing `.py` file with the current Python interpreter.
+
+The executor does not accept shell strings, and it does not support deleting files, disk formatting, security-setting changes, or downloading and executing scripts. Running a Python file executes that file's code; installing a package may also execute package code. Review the displayed operation and the file/package before approving.
+
+Every process has a timeout (120 seconds, or 300 seconds for installs), and stdout and stderr are capped at 16 KiB each. To ask the AI to explain a result, AITerminal asks separately and defaults to no. Only after approval does it send the captured output and exit status to the cloud. Common credential patterns are masked and sensitive environment variables are not passed to launched processes, but output can still contain private information: inspect it and decline sharing when in doubt. Local output is not added to conversation history.
+
 ## Backend Deployment
 
 AITerminal's backend runs on Netlify Functions.
@@ -271,7 +292,8 @@ AITerminal/
 │   │       ├── __init__.py
 │   │       ├── main.py
 │   │       ├── terminal.py
-│   │       └── client.py
+│   │       ├── client.py
+│   │       └── executor.py
 │   │
 │   ├── tests/
 │   └── pyproject.toml
@@ -371,6 +393,7 @@ AITerminal is designed to keep provider credentials on the server.
 - Redis stores temporary hashed-IP rate-limit counters.
 - Conversation messages are not permanently stored by the backend.
 - Conversation history is maintained temporarily in the CLI process.
+- Local command output is never sent to the cloud unless the user approves that separate disclosure.
 
 **Important:** The chat endpoint is publicly accessible and does not currently implement user authentication. Avoid submitting sensitive personal information.
 

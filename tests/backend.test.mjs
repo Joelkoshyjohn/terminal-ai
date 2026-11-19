@@ -75,12 +75,75 @@ test("chat sends a question and temporary context to Groq without client credent
   const groqRequest = requests[1];
   assert.equal(groqRequest.url, "https://api.groq.com/openai/v1/chat/completions");
   assert.equal(groqRequest.options.headers.authorization, "Bearer test-groq-key");
-  assert.deepEqual(JSON.parse(groqRequest.options.body).messages, [
+  const groqBody = JSON.parse(groqRequest.options.body);
+  assert.deepEqual(groqBody.messages.slice(1), [
     ...history,
     { role: "user", content: "Follow up" },
   ]);
+  assert.equal(groqBody.messages[0].role, "system");
+  assert.equal(groqBody.messages[0].content.includes("python_version"), true);
+  assert.deepEqual(groqBody.response_format, { type: "json_object" });
   assert.equal("authorization" in event({ message: "hello" }).headers, false);
   assert.equal(JSON.stringify(result).includes("test-groq-key"), false);
+});
+
+test("chat returns structured local-action proposals without executing them", async () => {
+  configureRedis();
+  configureGroq();
+  let groqCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith("https://redis.example.test")) return redisResponse(1);
+    groqCalls += 1;
+    return new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                type: "command",
+                message: "I can check the Python version.",
+                action: "python_version",
+                arguments: {},
+              }),
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  };
+
+  const result = await chat(event({ message: "Check my Python version." }));
+
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(decode(result), {
+    answer: "I can check the Python version.",
+    proposal: { action: "python_version", arguments: {} },
+  });
+  assert.equal(groqCalls, 1);
+});
+
+test("chat retries without JSON mode when a configured model does not support it", async () => {
+  configureRedis();
+  configureGroq();
+  const groqBodies = [];
+  globalThis.fetch = async (url, options) => {
+    if (String(url).startsWith("https://redis.example.test")) return redisResponse(1);
+    groqBodies.push(JSON.parse(options.body));
+    if (groqBodies.length === 1) return new Response("unsupported response format", { status: 400 });
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "A compatible answer." } }] }),
+      { status: 200 },
+    );
+  };
+
+  const result = await chat(event({ message: "hello" }));
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(decode(result).answer, "A compatible answer.");
+  assert.deepEqual(groqBodies[0].response_format, { type: "json_object" });
+  assert.equal("response_format" in groqBodies[1], false);
+  assert.deepEqual(groqBodies[0].messages, groqBodies[1].messages);
 });
 
 test("chat validates messages, history, body size, and request method", async () => {

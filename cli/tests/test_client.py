@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from aiterminal.client import AITerminalClient, DEFAULT_API_URL, ServiceError
+from aiterminal.client import AITerminalClient, ChatResponse, DEFAULT_API_URL, ServiceError
 
 
 def client_for(handler):
@@ -28,6 +28,23 @@ def test_chat_sends_question_and_history_without_authentication():
         assert client.ask("Follow up", [{"role": "user", "content": "Earlier"}]) == "A response"
 
     assert len(seen) == 1
+
+
+def test_chat_returns_a_structured_proposal_separately_from_the_answer():
+    with client_for(
+        lambda _request: httpx.Response(
+            200,
+            json={
+                "answer": "I can check that for you.",
+                "proposal": {"action": "python_version", "arguments": {}},
+            },
+        )
+    ) as client:
+        assert client.ask_with_proposal("Check Python", []) == ChatResponse(
+            "I can check that for you.",
+            {"action": "python_version", "arguments": {}},
+        )
+        assert client.ask("Check Python", []) == "I can check that for you."
 
 
 def test_rate_limit_and_server_errors_are_reported():
@@ -63,6 +80,8 @@ def test_network_timeout_and_invalid_response_errors_are_reported():
 def test_https_is_required_outside_local_development():
     with pytest.raises(ValueError, match="HTTPS"):
         AITerminalClient("http://api.example.com")
+    with pytest.raises(ValueError, match="credentials"):
+        AITerminalClient("https://user:password@example.com")
     with AITerminalClient("http://localhost:8888"):
         pass
 
