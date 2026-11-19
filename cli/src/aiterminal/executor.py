@@ -35,7 +35,7 @@ _PRIVATE_KEY = re.compile(
 
 
 class CommandValidationError(ValueError):
-    """The AI proposal is not in the local executor's safe command set."""
+    """The AI proposal is not in the local executor's  set."""
 
 
 class CommandExecutionError(RuntimeError):
