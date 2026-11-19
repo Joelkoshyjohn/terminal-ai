@@ -13,7 +13,7 @@ def ask_question() -> str:
 
 
 def show_answer(answer: str) -> None:
-    console.print("[bold green]varatharajan>[/bold green]")
+    console.print("[bold green]AI>[/bold green]")
     console.print(Markdown(answer))
 
 
