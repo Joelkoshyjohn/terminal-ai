@@ -27,7 +27,7 @@ aiterminal
 
 The client uses `https://aiterminal-cloud.netlify.app` by default. Override with `AIT_TERMINAL_API_URL` if needed.
 
-Use `clear` or `/clear` to clear the screen and temporary conversation context; use `exit` or `quit` to end the session. Context is memory-only and is discarded when the process exits.
+Use `clear` or `/clear` to clear the screen and temporary conversation context; use `exit` or its `quit` to end the session. Context is memory-only and is discarded when the process exits.
 
 ## Local actions
 
